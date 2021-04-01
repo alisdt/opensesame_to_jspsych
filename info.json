@@ -1,0 +1,10 @@
+{
+  "description": "Translate experiment to JSPsych",
+  "icon": "os-run-browser",
+  "label": "Translate to JSPsych",
+  "version": "0.0.1",
+  "shortcut": "Ctrl+Alt+J",
+  "priority": -10000,
+  "settings": {
+  }
+}
