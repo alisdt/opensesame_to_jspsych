@@ -3,20 +3,12 @@
 
 from pathlib import Path
 
+from libqtopensesame.items.keyboard_response import keyboard_response
 from libqtopensesame.items.loop import loop
 from libqtopensesame.items.sequence import sequence
 from libqtopensesame.items.sketchpad import sketchpad
 
-# one-time setup at the start of the jsPsych script
-SETUP = """
-"""
-
-def _nm(n):
-    """
-    Munge identifier names -- might need to avoid namespace clashes.
-    For now, pass through for clarity.
-    """
-    return n
+from jspsych_objects import *
 
 def clean_type(t):
     return repr(type(t)).replace('<','').replace('>','')
@@ -27,32 +19,28 @@ class Convertor(object):
         self.exp = experiment
         self.items = experiment.items
         self.start = experiment.var.start
-        self.plugins_used = set()
-
-    def html_template(self):
-        path = Path.resolve(Path.cwd() / Path(__file__))
-        return open(path.parent / "experiment_template.html").read()
-
-    def generate_html(self):
-        # call after all JS has been generated to get plugins used
-        plugin_html = ""
-        for plugin in self.plugins_used:
-            plugin_html += f'<script src="external/jspsych/plugins/jspsych-{plugin}.js"></script>\n'
-        return self.html_template().replace('{plugins}', plugin_html)
-
+        self.current_visual = None
+        self.context = TranslationContext()
 
     def to_jspsych(self):
         # assert that start is a sequence
         assert type(self.items[self.start]) == sequence, "Start of experiment must be a sequence"
-        # Push items on to the item_stack so sequences are at the bottom (start)
-        js = SETUP # generic node store, avoid using JS namespace
-        js += self.sequence_to_jspsych(self.start)
-        js += f"""
-jsPsych.init({{
-    timeline: [{_nm(self.start)}]
-}});
-"""
-        return self.generate_html(), js
+        top_sequence = self.sequence_to_jspsych(self.start, init=True)[0]
+        # do JS first as plugins are collected on the way
+        js = top_sequence.to_js()
+        return self.context.generate_html(), js
+
+    def sequence_to_jspsych(self, seq_item_name, condition="always", init=False):
+        seq_item = self.items[seq_item_name]
+        timeline_items = []
+        for item, cond in seq_item.items:
+            jsp_item = self.item_to_jspsych(item, condition=cond)
+            if jsp_item is not None:
+                if isinstance(jsp_item, list):
+                    timeline_items += jsp_item
+                else:
+                    timeline_items.append(jsp_item)
+        return [Timeline(self.context, seq_item_name, timeline_items, _init=init)]
 
     def item_to_jspsych(self, item_name, condition="always"):
         item = self.items[item_name]
@@ -62,69 +50,73 @@ jsPsych.init({{
             return self.loop_to_jspsych(item_name, condition)
         elif type(item) == sketchpad:
             return self.sketchpad_to_jspsych(item_name, condition)
+        elif type(item) == keyboard_response:
+            return self.keyboard_to_jspsych(item_name, condition)
         else:
             return self.filler_to_jspsych(item_name, condition)
 
     def sketchpad_to_jspsych(self, spad_item_name, condition="always"):
-        elements = self.items[spad_item_name].elements
+        """
+        We add a jsPsych code "trial" which just changes the current
+        visual stimulus. This will be persistent across sounds / keyboard input
+        until something changes it.
+        Then look at "duration":
+        - if "keypress", it's just a simple html-keyboard-response
+        - if 0, no further action (the next items will determine what happens)
+        - if a fixed duration, it's just a stimulus
+          (a html-keyboard-response with no keys allowed)
+        """
+        result = []
+        spad_item = self.items[spad_item_name]
+        elements = spad_item.elements
         spad_html = f"""\
-{len(elements)} items:<br>{'<br>'.join(e.to_string() for e in elements)}
-"""
-        return f"""\
-var {_nm(spad_item_name)} = {{
-    type: "html-keyboard-response",
-    stimulus: '{spad_html}'
-}};
-"""
+{len(elements)} items:<br>{'<br>'.join(e.to_string() for e in elements)}"""
+        result.append(ChangeVisualStim(
+            self.context, spad_item_name+"_visual", spad_html, condition
+        ))
+        duration_in = spad_item.var.duration
+        try:
+            duration = int(duration_in)
+        except ValueError:
+            # not an integer
+            duration = duration_in
+        if isinstance(duration, int):
+            if duration != 0:
+                # fixed duration, no keys -- just a stimulus
+                result.append(HTMLKeyboard(
+                    self.context, spad_item_name, keys=[], duration=int(duration)
+                ))
+                # if duration == 0, add nothing -- this is deliberate
+        else:
+            if duration == "keypress":
+                result.append(HTMLKeyboard(
+                    self.context, spad_item_name
+                ))
+            else:
+                # string but not "keypress" -- this is an error
+                raise Exception(f"Unknown value for duration in sketchpad: {duration}")
 
-    def sequence_to_jspsych(self, seq_item_name, condition="always"):
-        timeline_name = _nm(seq_item_name+"_timeline")
-        result = f'{timeline_name} = [];\n'
-        for item, cond in self.items[seq_item_name].items:
-            result += self.item_to_jspsych(item, condition=cond)
-            result += f'{timeline_name}.push({_nm(item)});\n'
-        result += f"""
-var {_nm(seq_item_name)} = {{
-    timeline: {timeline_name}
-}};
-"""
         return result
 
     def loop_to_jspsych(self, loop_item_name, condition="always"):
-        """
-        Uses a timeline variable on the table
-        Todo: repeats, csv file, everything else
-        """
         loop_item = self.items[loop_item_name]
         dm = loop_item.dm
-        loop_inner_name = loop_item._item
-        result = self.item_to_jspsych(loop_inner_name)
-        timeline_variables_name = _nm(loop_item_name+"_timeline_variables")
-        dm_contents = '\n'.join([
-            "{"+", ".join(f"{colname}: {repr(cell)}" for colname, cell in row)+"}"
-            for row in dm
-        ])
-        result += f"""
-var {timeline_variables_name} = [
-    {dm_contents}
-]
-var {_nm(loop_item_name)} = {{
-    timeline: [{_nm(loop_inner_name)}],
-    timeline_variables: {timeline_variables_name}
-}}
-"""
-        return result
+        return [Loop(self.context, loop_item_name, [self.item_to_jspsych(loop_item)], dm, condition)]
 
+    def keyboard_to_jspsych(self, kbd_item_name, condition="always"):
+        kbd_item = self.items[kbd_item_name]
+        allowed_responses = kbd_item.var.allowed_responses.split(";")
+        return [HTMLKeyboard(self.context, kbd_item_name, keys=allowed_responses)]
 
     def filler_to_jspsych(self, item_name, condition="always"):
         item = self.items[item_name]
-        self.plugins_used.add("html-keyboard-response")
-        return f"""
-{_nm(item_name)} = {{
-    type: "html-keyboard-response",
-    stimulus: "I am a filler item with type {clean_type(item)} and name {item_name}"
-}};
-"""
+        html = f"I am a filler item with type {clean_type(item)} and name {item_name}"
+        return [
+            ChangeVisualStim(
+                self.context, item_name+"_visual", html, condition
+            ),
+            HTMLKeyboard(self.context, item_name)
+        ]
 
 def opensesame_to_jspsych(experiment):
     c = Convertor(experiment)
