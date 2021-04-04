@@ -52,6 +52,9 @@ class Convertor(object):
             return self.sketchpad_to_jspsych(item_name, condition)
         elif type(item) == keyboard_response:
             return self.keyboard_to_jspsych(item_name, condition)
+        elif 'notepad' in item.__class__.__name__:
+            # horrible way to detect but not sure what else would work ....
+            return self.notepad_to_jspsych(item_name, condition)
         else:
             return self.filler_to_jspsych(item_name, condition)
 
@@ -101,12 +104,25 @@ class Convertor(object):
     def loop_to_jspsych(self, loop_item_name, condition="always"):
         loop_item = self.items[loop_item_name]
         dm = loop_item.dm
-        return [Loop(self.context, loop_item_name, [self.item_to_jspsych(loop_item)], dm, condition)]
+        inner_item_name = loop_item._item
+        return [
+            Loop(
+                self.context,
+                loop_item_name,
+                self.item_to_jspsych(inner_item_name), # *
+                dm
+            )
+        ]
+        # * Needs to be a list -- but all *_to_jspsych functions return lists
 
     def keyboard_to_jspsych(self, kbd_item_name, condition="always"):
         kbd_item = self.items[kbd_item_name]
         allowed_responses = kbd_item.var.allowed_responses.split(";")
         return [HTMLKeyboard(self.context, kbd_item_name, keys=allowed_responses)]
+
+    def notepad_to_jspsych(self, npd_item_name, condition="always"):
+        npd_item = self.items[npd_item_name]
+        return [Comment(self.context, npd_item_name, npd_item.var.get("note"))]
 
     def filler_to_jspsych(self, item_name, condition="always"):
         item = self.items[item_name]
