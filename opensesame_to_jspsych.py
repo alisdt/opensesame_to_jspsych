@@ -9,6 +9,7 @@ from libqtopensesame.items.sequence import sequence
 from libqtopensesame.items.sketchpad import sketchpad
 
 from jspsych_objects import *
+from sketchpad_to_html import SketchpadTranslator
 
 def clean_type(t):
     return repr(type(t)).replace('<','').replace('>','')
@@ -61,7 +62,8 @@ class Convertor(object):
     def sketchpad_to_jspsych(self, spad_item_name, condition="always"):
         """
         We add a jsPsych code "trial" which just changes the current
-        visual stimulus. This will be persistent across sounds / keyboard input
+        visual stimulus HTML and code to be run afterwards.
+        This will be persistent across sounds / keyboard input
         until something changes it.
         Then look at "duration":
         - if "keypress", it's just a simple html-keyboard-response
@@ -72,12 +74,11 @@ class Convertor(object):
         result = []
         spad_item = self.items[spad_item_name]
         elements = spad_item.elements
-        spad_html = f"""\
-{len(elements)} items:<br>{'<br>'.join(e.to_string() for e in elements)}"""
+        js, html = SketchpadTranslator(self.context, elements).to_js()
         result.append(ChangeVisualStim(
-            self.context, spad_item_name+"_visual", spad_html, condition
+            self.context, spad_item_name+"_visual", html, js, condition
         ))
-        duration_in = spad_item.var.duration
+        duration_in = spad_item.var.duration.strip()
         try:
             duration = int(duration_in)
         except ValueError:
@@ -95,8 +96,12 @@ class Convertor(object):
                 result.append(HTMLKeyboard(
                     self.context, spad_item_name
                 ))
+            elif duration.startswith("[") and duration.endswith("]"):
+                result.append(HTMLKeyboard(
+                    self.context, spad_item_name, duration=duration
+                ))
             else:
-                # string but not "keypress" -- this is an error
+                # string but not "keypress" or variable -- this is an error
                 raise Exception(f"Unknown value for duration in sketchpad: {duration}")
 
         return result
